@@ -4,7 +4,12 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.location.Geocoder
 import android.location.Location
 import android.location.LocationListener
@@ -114,26 +119,28 @@ class LocateActivity : Activity() {
         }
         DondeEstoyWidgetProvider.updateStatus(this, "Ubicado ✓", city)
         Executors.newSingleThreadExecutor().execute {
+            var bmp: Bitmap? = null
             try {
                 val lat = loc.latitude
                 val lon = loc.longitude
-                val url = URL("https://staticmap.openstreetmap.de/staticmap.php?center=$lat,$lon&zoom=15&size=600x360&markers=$lat,$lon,red-pushpin")
+                val url = URL("https://static-maps.yandex.ru/1.x/?ll=$lon,$lat&z=15&size=600,360&l=map&pt=$lon,$lat,pm2rdm")
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
                 }
                 conn.inputStream.use { input ->
-                    val bmp = BitmapFactory.decodeStream(input)
-                    if (bmp != null) {
-                        runOnUiThread {
-                            DondeEstoyWidgetProvider.updateStatus(this, "Ubicado ✓", city, bmp)
-                        }
-                    }
+                    bmp = BitmapFactory.decodeStream(input)
                 }
                 conn.disconnect()
             } catch (_: Exception) {
-            } finally {
-                runOnUiThread { if (!isFinishing) finish() }
+            }
+            if (bmp == null) {
+                bmp = drawFallbackMap(loc, city)
+            }
+            val mapBmp = bmp
+            runOnUiThread {
+                DondeEstoyWidgetProvider.updateStatus(this, "Ubicado ✓", city, mapBmp)
+                if (!isFinishing) finish()
             }
         }
     }
@@ -141,5 +148,31 @@ class LocateActivity : Activity() {
     private fun fail(msg: String) {
         DondeEstoyWidgetProvider.updateStatus(this, msg)
         window.decorView.postDelayed({ if (!isFinishing) finish() }, 1500)
+    }
+
+    private fun drawFallbackMap(loc: Location, city: String): Bitmap {
+        val w = 600
+        val h = 360
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.rgb(30, 36, 48))
+        val grid = Paint().apply { color = Color.argb(40, 255, 255, 255); strokeWidth = 2f }
+        for (x in 0..w step 60) c.drawLine(x.toFloat(), 0f, x.toFloat(), h.toFloat(), grid)
+        for (y in 0..h step 60) c.drawLine(0f, y.toFloat(), w.toFloat(), y.toFloat(), grid)
+        val pin = Paint().apply { color = Color.rgb(255, 90, 90); isAntiAlias = true }
+        c.drawCircle(w / 2f, h / 2f - 10f, 18f, pin)
+        val pinInner = Paint().apply { color = Color.WHITE; isAntiAlias = true }
+        c.drawCircle(w / 2f, h / 2f - 10f, 7f, pinInner)
+        val text = Paint().apply {
+            color = Color.WHITE
+            textSize = 28f
+            isAntiAlias = true
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        val label = if (city.isNotBlank()) city else "Ubicación"
+        c.drawText(label.take(28), 24f, h - 56f, text)
+        val sub = Paint().apply { color = Color.argb(200, 255, 255, 255); textSize = 22f; isAntiAlias = true }
+        c.drawText(String.format(Locale.US, "%.4f, %.4f", loc.latitude, loc.longitude), 24f, h - 24f, sub)
+        return bmp
     }
 }
