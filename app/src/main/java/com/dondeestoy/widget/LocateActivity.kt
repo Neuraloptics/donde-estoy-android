@@ -56,41 +56,89 @@ class LocateActivity : Activity() {
     }
 
     private fun fetchLocation() {
+        DondeEstoyWidgetProvider.updateStatus(this, "Ubicando (preciso)…")
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         try {
-            val last = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER)
-                ?: lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
-                ?: lm.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
-            if (last != null) {
-                resolveAndShow(last)
-            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                val provider = when {
-                    lm.isProviderEnabled(LocationManager.FUSED_PROVIDER) -> LocationManager.FUSED_PROVIDER
-                    lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER) -> LocationManager.NETWORK_PROVIDER
-                    else -> LocationManager.GPS_PROVIDER
+                var resolved = false
+                var best: Location? = null
+                fun consider(loc: Location?) {
+                    if (loc == null) return
+                    if (best == null || loc.accuracy in 1f..best!!.accuracy) best = loc
                 }
-                lm.getCurrentLocation(provider, null, mainExecutor) { loc ->
-                    if (loc != null) resolveAndShow(loc) else if (last == null) fail("No se pudo ubicar")
+                val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.FUSED_PROVIDER, LocationManager.NETWORK_PROVIDER)
+                    .filter { try { lm.isProviderEnabled(it) } catch (_: Exception) { false } }
+                if (providers.isEmpty()) {
+                    fail("Sin proveedor de ubicación")
+                    return
                 }
-                // safety timeout
-                window.decorView.postDelayed({ if (!isFinishing) finish() }, 20000)
+                val done = java.util.concurrent.atomic.AtomicInteger(0)
+                for (p in providers) {
+                    try {
+                        lm.getCurrentLocation(p, null, mainExecutor) { loc ->
+                            consider(loc)
+                            if (done.incrementAndGet() >= providers.size && !resolved) {
+                                resolved = true
+                                val chosen = best
+                                if (chosen != null) resolveAndShow(chosen) else fail("No se pudo ubicar")
+                            }
+                        }
+                    } catch (_: Exception) {
+                        if (done.incrementAndGet() >= providers.size && !resolved) {
+                            resolved = true
+                            val chosen = best
+                            if (chosen != null) resolveAndShow(chosen) else fail("No se pudo ubicar")
+                        }
+                    }
+                }
+                window.decorView.postDelayed({
+                    if (!resolved) {
+                        resolved = true
+                        val chosen = best
+                        if (chosen != null) resolveAndShow(chosen) else fail("No se pudo ubicar")
+                    }
+                }, 20000)
             } else {
+                var best: Location? = null
+                var resolved = false
                 val listener = object : LocationListener {
                     override fun onLocationChanged(location: Location) {
-                        lm.removeUpdates(this)
-                        resolveAndShow(location)
+                        if (best == null || (location.accuracy > 0f && location.accuracy < best!!.accuracy)) {
+                            best = location
+                        }
+                        if (location.hasAccuracy() && location.accuracy in 1f..12f) {
+                            if (!resolved) {
+                                resolved = true
+                                try { lm.removeUpdates(this) } catch (_: Exception) {}
+                                resolveAndShow(location)
+                            }
+                        }
                     }
                     override fun onProviderDisabled(provider: String) {}
                     override fun onProviderEnabled(provider: String) {}
                 }
-                @Suppress("DEPRECATION")
-                lm.requestSingleUpdate(LocationManager.NETWORK_PROVIDER, listener, Looper.getMainLooper())
-                window.decorView.postDelayed({
-                    try { lm.removeUpdates(listener) } catch (_: Exception) {}
-                    if (last == null) fail("No se pudo ubicar")
-                    if (!isFinishing) finish()
-                }, 20000)
+                var requested = false
+                for (p in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER)) {
+                    try {
+                        if (lm.isProviderEnabled(p)) {
+                            lm.requestLocationUpdates(p, 1000L, 0f, listener, Looper.getMainLooper())
+                            requested = true
+                        }
+                    } catch (_: Exception) {}
+                }
+                if (!requested) {
+                    val last = lm.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
+                    if (last != null) resolveAndShow(last) else fail("Sin proveedor de ubicación")
+                } else {
+                    window.decorView.postDelayed({
+                        try { lm.removeUpdates(listener) } catch (_: Exception) {}
+                        if (!resolved) {
+                            resolved = true
+                            val chosen = best
+                            if (chosen == null) fail("No se pudo ubicar") else resolveAndShow(chosen)
+                        }
+                    }, 15000)
+                }
             }
         } catch (se: SecurityException) {
             fail("Sin permiso de ubicación")
@@ -105,20 +153,23 @@ class LocateActivity : Activity() {
             @Suppress("DEPRECATION")
             val list = geocoder.getFromLocation(loc.latitude, loc.longitude, 1)
             val a = list?.firstOrNull()
+            val thoroughfare = a?.thoroughfare
+            val subThoroughfare = a?.subThoroughfare
             val locality = a?.locality ?: a?.subAdminArea ?: a?.adminArea
             val area = a?.adminArea
-            val country = a?.countryName
+            val street = listOfNotNull(thoroughfare, subThoroughfare).joinToString(" ").trim()
             when {
+                street.isNotBlank() && !locality.isNullOrBlank() -> "$street, $locality"
                 !locality.isNullOrBlank() && !area.isNullOrBlank() && locality != area -> "$locality, $area"
                 !locality.isNullOrBlank() -> locality
                 !area.isNullOrBlank() -> area
-                !country.isNullOrBlank() -> country
-                else -> String.format(Locale.US, "%.4f, %.4f", loc.latitude, loc.longitude)
+                !a?.countryName.isNullOrBlank() -> a?.countryName
+                else -> String.format(Locale.US, "%.5f, %.5f", loc.latitude, loc.longitude)
             }
         } catch (_: Exception) {
-            String.format(Locale.US, "%.4f, %.4f", loc.latitude, loc.longitude)
+            String.format(Locale.US, "%.5f, %.5f", loc.latitude, loc.longitude)
         }
-        DondeEstoyWidgetProvider.updateStatus(this, "Ubicado ✓", city)
+        DondeEstoyWidgetProvider.updateStatus(this, "Ubicado ✓ (±${loc.accuracy.toInt()}m)", city)
         Executors.newSingleThreadExecutor().execute {
             var bmp: Bitmap? = null
             var remote = false
@@ -160,7 +211,8 @@ class LocateActivity : Activity() {
                 bmp = drawFallbackMap(loc, city)
             }
             val mapBmp = bmp
-            val status = if (remote) "Ubicado ✓" else "Ubicado ✓ (sin mapa)"
+            val acc = loc.accuracy.toInt()
+            val status = if (remote) "Ubicado ✓ (±${acc}m)" else "Ubicado ✓ (±${acc}m, sin mapa)"
             runOnUiThread {
                 DondeEstoyWidgetProvider.updateStatus(this, status, city, mapBmp)
                 if (!isFinishing) finish()
@@ -175,27 +227,33 @@ class LocateActivity : Activity() {
 
     private fun fetchTileMap(lat: Double, lon: Double): Bitmap? {
         return try {
-            val z = 15
+            val z = 17
             val n = 2.0.pow(z.toDouble())
-            val xTile = ((lon + 180.0) / 360.0 * n).toInt()
+            val xFloat = (lon + 180.0) / 360.0 * n
             val latRad = Math.toRadians(lat)
-            val yTile = ((1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * n).toInt()
+            val yFloat = (1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * n
+            val xTile = floor(xFloat).toInt()
+            val yTile = floor(yFloat).toInt()
             val tilesX = 3
             val tilesY = 2
             val tileSize = 256
+            val startX = xTile - 1
+            val startY = yTile - 1
+            val px = ((xFloat - startX) * tileSize).toFloat()
+            val py = ((yFloat - startY) * tileSize).toFloat()
             val out = Bitmap.createBitmap(tileSize * tilesX, tileSize * tilesY, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(out)
             var ok = false
             for (dx in 0 until tilesX) {
                 for (dy in 0 until tilesY) {
-                    val tx = xTile - tilesX / 2 + dx
-                    val ty = yTile - tilesY / 2 + dy
+                    val tx = startX + dx
+                    val ty = startY + dy
                     val tileUrl = "https://tile.openstreetmap.org/$z/$tx/$ty.png"
                     try {
                         val conn = (URL(tileUrl).openConnection() as HttpURLConnection).apply {
                             connectTimeout = 8000
                             readTimeout = 8000
-                            setRequestProperty("User-Agent", "DondeEstoyWidget/1.0 (Android; contact: user)")
+                            setRequestProperty("User-Agent", "DondeEstoyWidget/1.0 (Android)")
                         }
                         if (conn.responseCode in 200..299) {
                             conn.inputStream.use { input ->
@@ -213,15 +271,12 @@ class LocateActivity : Activity() {
                 }
             }
             if (!ok) null else {
-                // draw pin at center (approx location of center tile area)
-                val cx = out.width / 2f
-                val cy = out.height / 2f
                 val pin = Paint().apply { color = Color.rgb(220, 40, 40); isAntiAlias = true }
-                canvas.drawCircle(cx, cy - 8f, 14f, pin)
+                canvas.drawCircle(px, py - 8f, 14f, pin)
                 val inner = Paint().apply { color = Color.WHITE; isAntiAlias = true }
-                canvas.drawCircle(cx, cy - 8f, 6f, inner)
+                canvas.drawCircle(px, py - 8f, 6f, inner)
                 val stem = Paint().apply { color = Color.rgb(220, 40, 40); strokeWidth = 5f; isAntiAlias = true }
-                canvas.drawLine(cx, cy + 4f, cx, cy + 18f, stem)
+                canvas.drawLine(px, py + 4f, px, py + 18f, stem)
                 out
             }
         } catch (_: Exception) {
