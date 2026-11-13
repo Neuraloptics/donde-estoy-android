@@ -120,29 +120,44 @@ class LocateActivity : Activity() {
         DondeEstoyWidgetProvider.updateStatus(this, "Ubicado ✓", city)
         Executors.newSingleThreadExecutor().execute {
             var bmp: Bitmap? = null
-            try {
-                val lat = loc.latitude
-                val lon = loc.longitude
-                val url = URL("https://maps.wikimedia.org/img/osm-intl,15,$lat,$lon,600x360.png")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 8000
-                    readTimeout = 8000
-                    setRequestProperty("User-Agent", "DondeEstoyWidget/1.0")
+            var remote = false
+            val lat = loc.latitude
+            val lon = loc.longitude
+            val urls = listOf(
+                "https://staticmap.openstreetmap.de/staticmap.php?center=$lat,$lon&zoom=15&size=600x360&markers=$lat,$lon,red-pushpin",
+                "https://maps.wikimedia.org/img/osm-intl,15,$lat,$lon,600x360.png"
+            )
+            for (u in urls) {
+                try {
+                    val conn = (URL(u).openConnection() as HttpURLConnection).apply {
+                        connectTimeout = 8000
+                        readTimeout = 8000
+                        setRequestProperty("User-Agent", "DondeEstoyWidget/1.0 (Android)")
+                    }
+                    val code = conn.responseCode
+                    if (code in 200..299) {
+                        conn.inputStream.use { input ->
+                            bmp = BitmapFactory.decodeStream(input)
+                        }
+                    }
+                    conn.disconnect()
+                    if (bmp != null) {
+                        remote = true
+                        if (!u.contains("markers=")) {
+                            bmp = addPin(bmp!!)
+                        }
+                        break
+                    }
+                } catch (_: Exception) {
                 }
-                conn.inputStream.use { input ->
-                    bmp = BitmapFactory.decodeStream(input)
-                }
-                conn.disconnect()
-            } catch (_: Exception) {
             }
-            if (bmp != null) {
-                bmp = addPin(bmp!!)
-            } else {
+            if (bmp == null) {
                 bmp = drawFallbackMap(loc, city)
             }
             val mapBmp = bmp
+            val status = if (remote) "Ubicado ✓" else "Ubicado ✓ (sin mapa)"
             runOnUiThread {
-                DondeEstoyWidgetProvider.updateStatus(this, "Ubicado ✓", city, mapBmp)
+                DondeEstoyWidgetProvider.updateStatus(this, status, city, mapBmp)
                 if (!isFinishing) finish()
             }
         }
