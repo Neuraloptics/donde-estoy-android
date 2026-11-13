@@ -23,6 +23,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 import java.util.concurrent.Executors
+import kotlin.math.*
 
 class LocateActivity : Activity() {
     private val REQ_LOC = 1001
@@ -152,6 +153,10 @@ class LocateActivity : Activity() {
                 }
             }
             if (bmp == null) {
+                bmp = fetchTileMap(lat, lon)
+                if (bmp != null) remote = true
+            }
+            if (bmp == null) {
                 bmp = drawFallbackMap(loc, city)
             }
             val mapBmp = bmp
@@ -166,6 +171,62 @@ class LocateActivity : Activity() {
     private fun fail(msg: String) {
         DondeEstoyWidgetProvider.updateStatus(this, msg)
         window.decorView.postDelayed({ if (!isFinishing) finish() }, 1500)
+    }
+
+    private fun fetchTileMap(lat: Double, lon: Double): Bitmap? {
+        return try {
+            val z = 15
+            val n = 2.0.pow(z.toDouble())
+            val xTile = ((lon + 180.0) / 360.0 * n).toInt()
+            val latRad = Math.toRadians(lat)
+            val yTile = ((1.0 - ln(tan(latRad) + 1.0 / cos(latRad)) / PI) / 2.0 * n).toInt()
+            val tilesX = 3
+            val tilesY = 2
+            val tileSize = 256
+            val out = Bitmap.createBitmap(tileSize * tilesX, tileSize * tilesY, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(out)
+            var ok = false
+            for (dx in 0 until tilesX) {
+                for (dy in 0 until tilesY) {
+                    val tx = xTile - tilesX / 2 + dx
+                    val ty = yTile - tilesY / 2 + dy
+                    val tileUrl = "https://tile.openstreetmap.org/$z/$tx/$ty.png"
+                    try {
+                        val conn = (URL(tileUrl).openConnection() as HttpURLConnection).apply {
+                            connectTimeout = 8000
+                            readTimeout = 8000
+                            setRequestProperty("User-Agent", "DondeEstoyWidget/1.0 (Android; contact: user)")
+                        }
+                        if (conn.responseCode in 200..299) {
+                            conn.inputStream.use { input ->
+                                val tb = BitmapFactory.decodeStream(input)
+                                if (tb != null) {
+                                    canvas.drawBitmap(tb, (dx * tileSize).toFloat(), (dy * tileSize).toFloat(), null)
+                                    tb.recycle()
+                                    ok = true
+                                }
+                            }
+                        }
+                        conn.disconnect()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+            if (!ok) null else {
+                // draw pin at center (approx location of center tile area)
+                val cx = out.width / 2f
+                val cy = out.height / 2f
+                val pin = Paint().apply { color = Color.rgb(220, 40, 40); isAntiAlias = true }
+                canvas.drawCircle(cx, cy - 8f, 14f, pin)
+                val inner = Paint().apply { color = Color.WHITE; isAntiAlias = true }
+                canvas.drawCircle(cx, cy - 8f, 6f, inner)
+                val stem = Paint().apply { color = Color.rgb(220, 40, 40); strokeWidth = 5f; isAntiAlias = true }
+                canvas.drawLine(cx, cy + 4f, cx, cy + 18f, stem)
+                out
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun addPin(src: Bitmap): Bitmap {
