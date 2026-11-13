@@ -123,10 +123,11 @@ class LocateActivity : Activity() {
             try {
                 val lat = loc.latitude
                 val lon = loc.longitude
-                val url = URL("https://static-maps.yandex.ru/1.x/?ll=$lon,$lat&z=15&size=600,360&l=map&pt=$lon,$lat,pm2rdm")
+                val url = URL("https://maps.wikimedia.org/img/osm-intl,15,$lat,$lon,600x360.png")
                 val conn = (url.openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
+                    setRequestProperty("User-Agent", "DondeEstoyWidget/1.0")
                 }
                 conn.inputStream.use { input ->
                     bmp = BitmapFactory.decodeStream(input)
@@ -134,7 +135,9 @@ class LocateActivity : Activity() {
                 conn.disconnect()
             } catch (_: Exception) {
             }
-            if (bmp == null) {
+            if (bmp != null) {
+                bmp = addPin(bmp!!)
+            } else {
                 bmp = drawFallbackMap(loc, city)
             }
             val mapBmp = bmp
@@ -148,6 +151,20 @@ class LocateActivity : Activity() {
     private fun fail(msg: String) {
         DondeEstoyWidgetProvider.updateStatus(this, msg)
         window.decorView.postDelayed({ if (!isFinishing) finish() }, 1500)
+    }
+
+    private fun addPin(src: Bitmap): Bitmap {
+        val bmp = src.copy(Bitmap.Config.ARGB_8888, true)
+        val c = Canvas(bmp)
+        val cx = bmp.width / 2f
+        val cy = bmp.height / 2f
+        val pin = Paint().apply { color = Color.rgb(220, 40, 40); isAntiAlias = true }
+        c.drawCircle(cx, cy - 8f, 14f, pin)
+        val inner = Paint().apply { color = Color.WHITE; isAntiAlias = true }
+        c.drawCircle(cx, cy - 8f, 6f, inner)
+        val stem = Paint().apply { color = Color.rgb(220, 40, 40); strokeWidth = 5f; isAntiAlias = true }
+        c.drawLine(cx, cy + 4f, cx, cy + 18f, stem)
+        return bmp
     }
 
     private fun drawFallbackMap(loc: Location, city: String): Bitmap {
