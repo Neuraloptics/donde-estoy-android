@@ -163,7 +163,7 @@ class LocateActivity : Activity() {
                 !locality.isNullOrBlank() && !area.isNullOrBlank() && locality != area -> "$locality, $area"
                 !locality.isNullOrBlank() -> locality
                 !area.isNullOrBlank() -> area
-                !a?.countryName.isNullOrBlank() -> a?.countryName
+                !a?.countryName.isNullOrBlank() -> a!!.countryName!!
                 else -> String.format(Locale.US, "%.5f, %.5f", loc.latitude, loc.longitude)
             }
         } catch (_: Exception) {
