@@ -6,6 +6,7 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
 import android.view.View
 import android.widget.RemoteViews
 
@@ -43,7 +44,7 @@ class DondeEstoyWidgetProvider : AppWidgetProvider() {
         const val ACTION_EMERGENCY = "com.dondeestoy.widget.ACTION_EMERGENCY"
         const val EXTRA_ACTION = "extra_action"
 
-        fun updateStatus(context: Context, status: String, city: String? = null) {
+        fun updateStatus(context: Context, status: String, city: String? = null, map: Bitmap? = null) {
             val mgr = AppWidgetManager.getInstance(context)
             val ids = mgr.getAppWidgetIds(ComponentName(context, DondeEstoyWidgetProvider::class.java))
             val views = buildViews(context).apply {
@@ -53,6 +54,9 @@ class DondeEstoyWidgetProvider : AppWidgetProvider() {
                     setViewVisibility(R.id.text_city, View.VISIBLE)
                 } else {
                     setViewVisibility(R.id.text_city, View.GONE)
+                }
+                if (map != null) {
+                    setImageViewBitmap(R.id.image_map, map)
                 }
             }
             for (id in ids) mgr.updateAppWidget(id, views)

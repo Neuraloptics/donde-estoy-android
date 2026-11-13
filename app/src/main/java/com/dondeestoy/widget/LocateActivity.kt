@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.location.Geocoder
 import android.location.Location
 import android.location.LocationListener
@@ -13,7 +14,10 @@ import android.os.Bundle
 import android.os.Looper
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.Locale
+import java.util.concurrent.Executors
 
 class LocateActivity : Activity() {
     private val REQ_LOC = 1001
@@ -64,7 +68,7 @@ class LocateActivity : Activity() {
                     if (loc != null) resolveAndShow(loc) else if (last == null) fail("No se pudo ubicar")
                 }
                 // safety timeout
-                window.decorView.postDelayed({ if (!isFinishing) finish() }, 12000)
+                window.decorView.postDelayed({ if (!isFinishing) finish() }, 20000)
             } else {
                 val listener = object : LocationListener {
                     override fun onLocationChanged(location: Location) {
@@ -80,7 +84,7 @@ class LocateActivity : Activity() {
                     try { lm.removeUpdates(listener) } catch (_: Exception) {}
                     if (last == null) fail("No se pudo ubicar")
                     if (!isFinishing) finish()
-                }, 12000)
+                }, 20000)
             }
         } catch (se: SecurityException) {
             fail("Sin permiso de ubicación")
@@ -109,7 +113,29 @@ class LocateActivity : Activity() {
             String.format(Locale.US, "%.4f, %.4f", loc.latitude, loc.longitude)
         }
         DondeEstoyWidgetProvider.updateStatus(this, "Ubicado ✓", city)
-        window.decorView.postDelayed({ if (!isFinishing) finish() }, 1500)
+        Executors.newSingleThreadExecutor().execute {
+            try {
+                val lat = loc.latitude
+                val lon = loc.longitude
+                val url = URL("https://staticmap.openstreetmap.de/staticmap.php?center=$lat,$lon&zoom=15&size=600x360&markers=$lat,$lon,red-pushpin")
+                val conn = (url.openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                }
+                conn.inputStream.use { input ->
+                    val bmp = BitmapFactory.decodeStream(input)
+                    if (bmp != null) {
+                        runOnUiThread {
+                            DondeEstoyWidgetProvider.updateStatus(this, "Ubicado ✓", city, bmp)
+                        }
+                    }
+                }
+                conn.disconnect()
+            } catch (_: Exception) {
+            } finally {
+                runOnUiThread { if (!isFinishing) finish() }
+            }
+        }
     }
 
     private fun fail(msg: String) {
