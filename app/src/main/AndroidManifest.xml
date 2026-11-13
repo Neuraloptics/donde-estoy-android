@@ -22,6 +22,13 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".LocateActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <receiver
             android:name=".DondeEstoyWidgetProvider"
             android:exported="true"
