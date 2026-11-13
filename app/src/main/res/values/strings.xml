@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">¿Dónde estoy?</string>
+    <string name="widget_name">¿Dónde estoy?</string>
+    <string name="widget_description">Ubicate rápido, volvé a casa o pedí ayuda desde el widget.</string>
+    <string name="where_am_i">¿Dónde estoy?</string>
+    <string name="go_home">Casa</string>
+    <string name="emergency">911</string>
+    <string name="sleeping">Tocá para ubicarte</string>
+</resources>
