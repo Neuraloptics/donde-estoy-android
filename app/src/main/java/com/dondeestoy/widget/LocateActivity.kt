@@ -56,63 +56,84 @@ class LocateActivity : Activity() {
     }
 
     private fun fetchLocation() {
-        DondeEstoyWidgetProvider.updateStatus(this, "Ubicando (preciso)…")
+        DondeEstoyWidgetProvider.updateStatus(this, "Ubicando…")
         val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                var resolved = false
-                var best: Location? = null
-                fun consider(loc: Location?) {
-                    if (loc == null) return
-                    if (best == null || loc.accuracy in 1f..best!!.accuracy) best = loc
+            var best: Location? = null
+            var shown = false
+            var finished = false
+
+            fun isBetter(a: Location, b: Location?): Boolean {
+                if (b == null) return true
+                val aa = if (a.hasAccuracy() && a.accuracy > 0f) a.accuracy else 99999f
+                val bb = if (b.hasAccuracy() && b.accuracy > 0f) b.accuracy else 99999f
+                return aa < bb
+            }
+
+            fun show(loc: Location, refining: Boolean) {
+                shown = true
+                resolveAndShow(loc, refining)
+            }
+
+            fun finishWithBest() {
+                if (finished) return
+                finished = true
+                val chosen = best
+                if (chosen == null) {
+                    fail("No se pudo ubicar")
+                } else {
+                    resolveAndShow(chosen, false)
                 }
+            }
+
+            fun consider(loc: Location?, forceShow: Boolean = false) {
+                if (loc == null) return
+                if (isBetter(loc, best)) best = loc
+                val b = best ?: return
+                if (!shown) {
+                    // show first decent/coarse fix quickly
+                    show(b, b.accuracy > 20f)
+                } else if (forceShow) {
+                    show(b, b.accuracy > 20f)
+                }
+                // if very precise, we can finish early
+                if (b.hasAccuracy() && b.accuracy in 1f..12f) {
+                    finishWithBest()
+                }
+            }
+
+            // seed with a recent last known location for instant feedback
+            for (p in listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER)) {
+                try {
+                    val l = lm.getLastKnownLocation(p) ?: continue
+                    if (System.currentTimeMillis() - l.time < 5 * 60 * 1000) consider(l)
+                } catch (_: SecurityException) {}
+            }
+            if (best != null) show(best!!, best!!.accuracy > 20f)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val providers = listOf(LocationManager.GPS_PROVIDER, LocationManager.FUSED_PROVIDER, LocationManager.NETWORK_PROVIDER)
                     .filter { try { lm.isProviderEnabled(it) } catch (_: Exception) { false } }
-                if (providers.isEmpty()) {
-                    fail("Sin proveedor de ubicación")
-                    return
+                if (providers.isEmpty() && best == null) {
+                    fail("Sin proveedor de ubicación"); return
                 }
-                val done = java.util.concurrent.atomic.AtomicInteger(0)
+                val pending = java.util.concurrent.atomic.AtomicInteger(providers.size)
                 for (p in providers) {
                     try {
                         lm.getCurrentLocation(p, null, mainExecutor) { loc ->
                             consider(loc)
-                            if (done.incrementAndGet() >= providers.size && !resolved) {
-                                resolved = true
-                                val chosen = best
-                                if (chosen != null) resolveAndShow(chosen) else fail("No se pudo ubicar")
-                            }
+                            if (pending.decrementAndGet() <= 0 && !finished) finishWithBest()
                         }
                     } catch (_: Exception) {
-                        if (done.incrementAndGet() >= providers.size && !resolved) {
-                            resolved = true
-                            val chosen = best
-                            if (chosen != null) resolveAndShow(chosen) else fail("No se pudo ubicar")
-                        }
+                        if (pending.decrementAndGet() <= 0 && !finished) finishWithBest()
                     }
                 }
-                window.decorView.postDelayed({
-                    if (!resolved) {
-                        resolved = true
-                        val chosen = best
-                        if (chosen != null) resolveAndShow(chosen) else fail("No se pudo ubicar")
-                    }
-                }, 20000)
+                window.decorView.postDelayed({ if (!finished) finishWithBest() }, 12000)
             } else {
-                var best: Location? = null
-                var resolved = false
                 val listener = object : LocationListener {
                     override fun onLocationChanged(location: Location) {
-                        if (best == null || (location.accuracy > 0f && location.accuracy < best!!.accuracy)) {
-                            best = location
-                        }
-                        if (location.hasAccuracy() && location.accuracy in 1f..12f) {
-                            if (!resolved) {
-                                resolved = true
-                                try { lm.removeUpdates(this) } catch (_: Exception) {}
-                                resolveAndShow(location)
-                            }
-                        }
+                        consider(location)
+                        if (finished) try { lm.removeUpdates(this) } catch (_: Exception) {}
                     }
                     override fun onProviderDisabled(provider: String) {}
                     override fun onProviderEnabled(provider: String) {}
@@ -126,18 +147,13 @@ class LocateActivity : Activity() {
                         }
                     } catch (_: Exception) {}
                 }
-                if (!requested) {
-                    val last = lm.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER)
-                    if (last != null) resolveAndShow(last) else fail("Sin proveedor de ubicación")
+                if (!requested && best == null) {
+                    fail("Sin proveedor de ubicación")
                 } else {
                     window.decorView.postDelayed({
                         try { lm.removeUpdates(listener) } catch (_: Exception) {}
-                        if (!resolved) {
-                            resolved = true
-                            val chosen = best
-                            if (chosen == null) fail("No se pudo ubicar") else resolveAndShow(chosen)
-                        }
-                    }, 15000)
+                        if (!finished) finishWithBest()
+                    }, 12000)
                 }
             }
         } catch (se: SecurityException) {
@@ -147,7 +163,17 @@ class LocateActivity : Activity() {
         }
     }
 
-    private fun resolveAndShow(loc: Location) {
+    @Volatile private var lastShownAcc: Float = Float.MAX_VALUE
+    @Volatile private var mapGen: Int = 0
+
+    private fun resolveAndShow(loc: Location, refining: Boolean = false) {
+        val acc = if (loc.hasAccuracy() && loc.accuracy > 0f) loc.accuracy else 99999f
+        if (refining && acc >= lastShownAcc && lastShownAcc < 99999f) return
+        if (refining || acc < lastShownAcc) lastShownAcc = minOf(lastShownAcc, acc)
+        // if final and not better, still proceed to finalize UI
+        val gen = ++mapGen
+        lastShownAcc = minOf(lastShownAcc, acc)
+
         val city = try {
             val geocoder = Geocoder(this, Locale.getDefault())
             @Suppress("DEPRECATION")
@@ -169,12 +195,16 @@ class LocateActivity : Activity() {
         } catch (_: Exception) {
             String.format(Locale.US, "%.5f, %.5f", loc.latitude, loc.longitude)
         }
-        DondeEstoyWidgetProvider.updateStatus(this, "Ubicado ✓ (±${loc.accuracy.toInt()}m)", city)
+
+        val prefix = if (refining) "Afinando…" else "Ubicado ✓"
+        DondeEstoyWidgetProvider.updateStatus(this, "$prefix (±${loc.accuracy.toInt()}m)", city)
+
+        val lat = loc.latitude
+        val lon = loc.longitude
+        val accInt = loc.accuracy.toInt()
         Executors.newSingleThreadExecutor().execute {
             var bmp: Bitmap? = null
             var remote = false
-            val lat = loc.latitude
-            val lon = loc.longitude
             val urls = listOf(
                 "https://staticmap.openstreetmap.de/staticmap.php?center=$lat,$lon&zoom=15&size=600x360&markers=$lat,$lon,red-pushpin",
                 "https://maps.wikimedia.org/img/osm-intl,15,$lat,$lon,600x360.png"
@@ -182,8 +212,8 @@ class LocateActivity : Activity() {
             for (u in urls) {
                 try {
                     val conn = (URL(u).openConnection() as HttpURLConnection).apply {
-                        connectTimeout = 8000
-                        readTimeout = 8000
+                        connectTimeout = 6000
+                        readTimeout = 6000
                         setRequestProperty("User-Agent", "DondeEstoyWidget/1.0 (Android)")
                     }
                     val code = conn.responseCode
@@ -211,11 +241,11 @@ class LocateActivity : Activity() {
                 bmp = drawFallbackMap(loc, city)
             }
             val mapBmp = bmp
-            val acc = loc.accuracy.toInt()
-            val status = if (remote) "Ubicado ✓ (±${acc}m)" else "Ubicado ✓ (±${acc}m, sin mapa)"
+            val status = if (remote) "$prefix (±${accInt}m)" else "$prefix (±${accInt}m, sin mapa)"
             runOnUiThread {
+                if (gen != mapGen) return@runOnUiThread
                 DondeEstoyWidgetProvider.updateStatus(this, status, city, mapBmp)
-                if (!isFinishing) finish()
+                if (!refining && !isFinishing) finish()
             }
         }
     }
